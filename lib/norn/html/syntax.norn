@@ -1,0 +1,19 @@
+(ns norn.html.syntax
+  (:require [norn.string :as str]))
+
+(def space? #{\space \tab \newline \return \formfeed})
+
+(defn ascii-letter? [c]
+  (and c (let [n (int c)] (or (<= 65 n 90) (<= 97 n 122)))))
+
+(defn digit? [c]
+  (and c (<= 48 (int c) 57)))
+
+(defn ascii-lower [s]
+  (str/replace s #"[A-Z]" str/lower-case))
+
+(defn skip-while [chars at pred]
+  (loop [at at]
+    (if (pred (nth chars at nil))
+      (recur (inc at))
+      at)))

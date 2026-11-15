@@ -1,0 +1,264 @@
+(ns norn.html.selector
+  (:require [norn.html.syntax :as syntax]
+            [norn.string :as str]))
+
+(defn- current [{:keys [chars at]}]
+  (nth chars @at nil))
+
+(defn- consume! [{:keys [at] :as state}]
+  (let [c (current state)]
+    (vswap! at inc)
+    c))
+
+(defn- skip-space! [{:keys [chars at]}]
+  (let [end (syntax/skip-while chars @at syntax/space?)
+        skipped? (> end @at)]
+    (vreset! at end)
+    skipped?))
+
+(defn- fail! [{:keys [at]} message]
+  (error ParseError :source "CSS selector" :line 1 :column (inc @at)
+         :message (str "CSS selector at character " (inc @at) ": " message)))
+
+(defn- expect! [state expected]
+  (when-not (= expected (current state))
+    (fail! state (str "expected " expected)))
+  (consume! state))
+
+(defn- hex-value [c]
+  (when c
+    (let [n (int c)]
+      (cond (<= 48 n 57) (- n 48)
+            (<= 65 n 70) (- n 55)
+            (<= 97 n 102) (- n 87)))))
+
+(defn- escape! [state]
+  (expect! state \\)
+  (let [c (current state)]
+    (cond
+      (or (nil? c) (contains? #{\newline \return \formfeed} c))
+      (fail! state "invalid escape")
+
+      (some? (hex-value c))
+      (let [value (loop [digits 0 value 0]
+                    (let [digit (hex-value (current state))]
+                      (if (or (= digits 6) (nil? digit))
+                        value
+                        (do (consume! state)
+                            (recur (inc digits) (+ (* value 16) digit))))))]
+        (when (syntax/space? (current state))
+          (when (and (= \return (consume! state)) (= \newline (current state)))
+            (consume! state)))
+        (if (or (zero? value) (<= 0xd800 value 0xdfff) (> value 0x10ffff))
+          \�
+          (char value)))
+
+      :else (consume! state))))
+
+(defn- ident-start? [c]
+  (and c (or (syntax/ascii-letter? c) (contains? #{\_ \- \\} c) (>= (int c) 128))))
+
+(defn- identifier! [state]
+  (when-not (ident-start? (current state))
+    (fail! state "expected an identifier"))
+  (loop [chars []]
+    (let [c (current state)]
+      (cond (= c \\) (recur (conj chars (escape! state)))
+            (or (ident-start? c) (syntax/digit? c)) (recur (conj chars (consume! state)))
+            :else (str/join chars)))))
+
+(defn- quoted! [state]
+  (let [quote-char (consume! state)]
+    (loop [chars []]
+      (let [c (current state)]
+        (cond (= c quote-char) (do (consume! state) (str/join chars))
+              (or (nil? c) (contains? #{\newline \return \formfeed} c))
+              (fail! state "unterminated string")
+              (= c \\) (recur (conj chars (escape! state)))
+              :else (recur (conj chars (consume! state))))))))
+
+(def ^:private attr-operators
+  {\= :equals, \~ :word, \| :language, \^ :prefix, \$ :suffix, \* :substring})
+
+(defn- attribute! [state]
+  (expect! state \[)
+  (skip-space! state)
+  (let [name (syntax/ascii-lower (identifier! state))]
+    (skip-space! state)
+    (if (= \] (current state))
+      (do (consume! state) [:attr name])
+      (let [c (current state)
+            op (get attr-operators c)]
+        (when-not op (fail! state "expected an attribute comparison"))
+        (when-not (= c \=) (consume! state))
+        (expect! state \=)
+        (skip-space! state)
+        (let [value (if (contains? #{\" \'} (current state)) (quoted! state) (identifier! state))
+              _ (skip-space! state)
+              mode (when-not (= \] (current state)) (syntax/ascii-lower (identifier! state)))]
+          (when-not (contains? #{nil "i" "s"} mode)
+            (fail! state "expected attribute case flag i or s"))
+          (skip-space! state)
+          (expect! state \])
+          [:attr name op value mode])))))
+
+(def ^:private pseudos #{"first-child" "last-child" "only-child" "empty" "root"})
+
+(defn- pseudo! [state]
+  (expect! state \:)
+  (let [name (syntax/ascii-lower (identifier! state))]
+    (when-not (contains? pseudos name)
+      (fail! state (str "unsupported pseudo-class " name)))
+    [:pseudo name]))
+
+(defn- compound! [state]
+  (let [c (current state)
+        tests (cond (= c \*) (do (consume! state) [[:any]])
+                    (ident-start? c) [[:tag (syntax/ascii-lower (identifier! state))]]
+                    :else [])]
+    (loop [tests tests]
+      (case (current state)
+        \# (do (consume! state) (recur (conj tests [:id (identifier! state)])))
+        \. (do (consume! state) (recur (conj tests [:class (identifier! state)])))
+        \[ (recur (conj tests (attribute! state)))
+        \: (recur (conj tests (pseudo! state)))
+        (if (empty? tests)
+          (fail! state "expected a selector")
+          tests)))))
+
+(def ^:private combinators {\> :child, \+ :adjacent, \~ :sibling})
+
+(defn- complex! [state]
+  (loop [parts [] relation nil]
+    (let [parts (conj parts [(compound! state) relation])
+          gap? (skip-space! state)
+          c (current state)]
+      (cond (contains? #{nil \,} c) (vec (rseq parts))
+            (contains? combinators c) (do (consume! state)
+                                          (skip-space! state)
+                                          (recur parts (get combinators c)))
+            gap? (recur parts :descendant)
+            :else (fail! state "expected a combinator or comma")))))
+
+(defn- compile-selector [source]
+  (let [state {:chars (vec source) :at (volatile! 0)}]
+    (loop [groups []]
+      (skip-space! state)
+      (let [groups (conj groups (complex! state))]
+        (if (= \, (current state))
+          (do (consume! state) (recur groups))
+          groups)))))
+
+(defn- has-word? [value wanted]
+  (and (not (empty? wanted))
+       (some #(= wanted %) (str/split value #"[\t\n\r\f ]+"))))
+
+;; HTML defines ASCII-insensitive matching for these attribute values.
+(def ^:private insensitive-attrs
+  #{"accept" "accept-charset" "align" "alink" "axis" "bgcolor" "charset" "checked"
+    "clear" "codetype" "color" "compact" "declare" "defer" "dir" "direction"
+    "disabled" "enctype" "face" "frame" "hreflang" "http-equiv" "lang" "language"
+    "link" "media" "method" "multiple" "nohref" "noresize" "noshade" "nowrap"
+    "readonly" "rel" "rev" "rules" "scope" "scrolling" "selected" "shape"
+    "target" "text" "type" "valign" "valuetype" "vlink"})
+
+(defn- attribute-matches? [attrs name op value mode]
+  (when-some [actual (get attrs name)]
+    (if (nil? op)
+      true
+      (let [insensitive? (or (= mode "i") (and (nil? mode) (contains? insensitive-attrs name)))
+            actual (if insensitive? (syntax/ascii-lower actual) actual)
+            value (if insensitive? (syntax/ascii-lower value) value)]
+        (case op
+          :equals (= actual value)
+          :word (has-word? actual value)
+          :language (or (= actual value) (str/starts-with? actual (str value "-")))
+          :prefix (and (not (empty? value)) (str/starts-with? actual value))
+          :suffix (and (not (empty? value)) (str/ends-with? actual value))
+          :substring (and (not (empty? value)) (str/includes? actual value)))))))
+
+(defn- pseudo-matches? [{:keys [node parent siblings index]} name]
+  (case name
+    "first-child" (and parent (zero? index))
+    "last-child" (and parent (= index (dec (count siblings))))
+    "only-child" (and parent (= 1 (count siblings)))
+    "empty" (every? #(= :comment (:type %)) (:children node))
+    "root" (= :document (:type (:node parent)))))
+
+(defn- compound-matches? [{:keys [node] :as path} tests]
+  (and (= :element (:type node))
+       (let [{:keys [tag attrs]} node]
+         (every?
+          (fn [[kind name op value mode]]
+            (case kind
+              :any true
+              :tag (= tag name)
+              :id (= (get attrs "id") name)
+              :class (has-word? (get attrs "class" "") name)
+              :attr (attribute-matches? attrs name op value mode)
+              :pseudo (pseudo-matches? path name)))
+          tests))))
+
+(defn- at-sibling [{:keys [siblings] :as path} index]
+  (assoc path :index index :node (nth siblings index)))
+
+(defn- next-states
+  "Where matching continues at step after path matched with relation. A
+  state's mode :up also tries the next ancestor if it fails, and :back the
+  previous sibling, so a combinator never fans out to every candidate."
+  [{:keys [parent index] :as path} relation step]
+  (case relation
+    :child (when parent [[parent step nil]])
+    :descendant (when parent [[parent step :up]])
+    :adjacent (when (pos? index) [[(at-sibling path (dec index)) step nil]])
+    :sibling (when (pos? index) [[(at-sibling path (dec index)) step :back]])))
+
+(defn- path-key
+  "Identifies a path's position: its parent's id and its sibling index."
+  [{:keys [parent index]}]
+  [(:id parent) index])
+
+(defn- complex-matches?
+  "Match parts (rightmost first) against path and its relatives, depth
+  first. A state already tried failed, so it is never searched again."
+  [path parts]
+  (loop [pending [[path 0 nil]] seen #{}]
+    (if-let [[path step mode] (peek pending)]
+      (let [pending (pop pending)
+            state [(path-key path) step mode]]
+        (if (contains? seen state)
+          (recur pending seen)
+          (let [seen (conj seen state)
+                ;; The alternative goes underneath, tried if this one fails.
+                pending (cond (and (= mode :up) (:parent path)) (conj pending [(:parent path) step :up])
+                              (and (= mode :back) (pos? (:index path)))
+                              (conj pending [(at-sibling path (dec (:index path))) step :back])
+                              :else pending)
+                [tests relation] (nth parts step)]
+            (if (compound-matches? path tests)
+              (if relation
+                (recur (into pending (next-states path relation (inc step))) seen)
+                true)
+              (recur pending seen)))))
+      false)))
+
+(defn- push-children [pending {:keys [node] :as path} next-id]
+  (let [siblings (filterv #(= :element (:type %)) (:children node))]
+    (loop [pending pending index (dec (count siblings))]
+      (if (neg? index)
+        pending
+        (recur (conj pending {:node (nth siblings index) :parent path :index index
+                              :siblings siblings :id (vswap! next-id inc)})
+               (dec index))))))
+
+(defn select [node source first-only?]
+  (let [groups (compile-selector source)
+        next-id (volatile! 0)]
+    (loop [pending (push-children [] {:node node :index 0 :id 0} next-id) matches []]
+      (if-let [path (peek pending)]
+        (let [node (:node path)
+              match? (some #(complex-matches? path %) groups)]
+          (if (and match? first-only?)
+            node
+            (recur (push-children (pop pending) path next-id) (if match? (conj matches node) matches))))
+        (when-not first-only? matches)))))

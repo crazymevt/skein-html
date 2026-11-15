@@ -1,0 +1,46 @@
+(ns norn.html
+  (:require [norn.html.parser :as parser]
+            [norn.html.selector :as selector]
+            [norn.html.syntax :as syntax]
+            [norn.io :as io]
+            [norn.string :as str]))
+
+(defn parse
+  "Parse an HTML string as a document, with html, head and body elements."
+  [source]
+  (parser/parse-document source))
+
+(defn parse-fragment
+  "Parse an HTML snippet, keeping its top-level elements and text."
+  [source]
+  (parser/parse-fragment source))
+
+(defn read-file
+  "Read a UTF-8 HTML file and parse it as a document."
+  [path]
+  (parse (io/read-text path)))
+
+(defn attr
+  "Get an element's attribute by string or keyword name. Missing attributes return nil."
+  [node attribute]
+  (get (:attrs node) (syntax/ascii-lower (name attribute))))
+
+(defn text
+  "Concatenate descendant text in document order. Includes script and style text."
+  [node]
+  (loop [pending [node] pieces []]
+    (if-let [node (peek pending)]
+      (if (string? node)
+        (recur (pop pending) (conj pieces node))
+        (recur (into (pop pending) (rseq (:children node))) pieces))
+      (str/join pieces))))
+
+(defn select
+  "Return matching descendant elements in document order, without duplicates."
+  [node css]
+  (selector/select node css false))
+
+(defn select-first
+  "Return the first matching descendant element, or nil."
+  [node css]
+  (selector/select node css true))

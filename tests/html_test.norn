@@ -1,0 +1,143 @@
+(ns html-test
+  (:require [norn.html :as html]
+            [norn.string :as str]
+            [norn.test :refer [deftest is]]))
+
+(deftest documents-and-fragments
+  (let [doc (html/parse (str "<!DOCTYPE HTML><!-- before --><HTML lang=en>"
+                             "<META charset=utf-8><TITLE>Guide &amp; notes</TITLE>"
+                             "<BODY class=page><P>Hello <em>there</em>.<P>Next<br><IMG src=/cat.png></HTML>"))]
+    (is (= :document (:type doc)))
+    (is (= [{:type :doctype :name "html"} {:type :comment :text " before "}]
+           (subvec (:children doc) 0 2)))
+    (is (= "en" (html/attr (html/select-first doc "html:root") :LANG)))
+    (is (= "Guide & notes" (html/text (html/select-first doc "head > title"))))
+    (is (= ["Hello there." "Next"] (mapv html/text (html/select doc "body.page > p"))))
+    (is (= "/cat.png" (html/attr (html/select-first doc "p > br + img") "src")))
+    (is (= "Guide & notesHello there.Next" (html/text doc))))
+  (let [fragment (html/parse-fragment "before<span>a</span><!-- note --> after")]
+    (is (= :fragment (:type fragment)))
+    (is (= ["before" {:type :element :tag "span" :attrs {} :children ["a"]}
+            {:type :comment :text " note "} " after"]
+           (:children fragment)))
+    (is (= "beforea after" (html/text fragment))))
+  (is (= ["head" "body"] (mapv :tag (html/select (html/parse "") "html > *")))))
+
+(deftest optional-tags-and-malformed-input
+  (let [fragment (html/parse-fragment (str "<ul id=outer><li>one<ul><li>nested</ul><li>two</ul>"
+                                           "<dl><dt>A<dd>B<dt>C<dd>D</dl>"
+                                           "<table><tr><td>1<td>2<tr><td>3<th>4</table>"
+                                           "<select><option>red<option>blue</select>"
+                                           "<p><b>A<div>B</div><div/>C</div>"))]
+    (is (= ["onenested" "two"] (mapv html/text (html/select fragment "#outer > li"))))
+    (is (= ["onenested" "nested" "two"]
+           (mapv html/text (html/select fragment "ul:first-child > li"))))
+    (is (= ["A" "B" "C" "D"] (mapv html/text (html/select fragment "dl > dt, dl > dd"))))
+    (is (= ["1" "2" "3" "4"] (mapv html/text (html/select fragment "table > tbody > tr > *"))))
+    (is (= ["red" "blue"] (mapv html/text (html/select fragment "select > option"))))
+    (is (= ["A"] (mapv html/text (html/select fragment "p"))))
+    (is (= ["B" "C"] (mapv html/text (html/select fragment "div")))))
+  (is (= "1 < 2 tail" (html/text (html/parse-fragment "1 < 2 </>tail<!--unfinished"))))
+  (is (= "stable" (html/text (html/parse-fragment "<p>stable<input title='unfinished"))))
+  (is (= "" (html/text (html/parse-fragment "<?doctype something><!---->"))))
+  (is (= "ok" (html/text (html/parse-fragment "<!-->ok")))))
+
+(deftest references-and-attributes
+  (let [fragment (html/parse-fragment
+                  (str "<INPUT ID=first id=second DISABLED data-ref='&copy= &copyx &copy; &quot;'"
+                       " data-text=A&amp;B value=\"🙂\">"
+                       "<p>&notit; &notin; &CounterClockwiseContourIntegral; &acE; "
+                       "&#x1F642; &#169 &#128; &#0; &#xD800; &#9999999999999999999; &unknown;</p>"))
+        input (html/select-first fragment "input")]
+    (is (= "first" (html/attr input :id)))
+    (is (= "" (html/attr input :disabled)))
+    (is (= nil (html/attr input :missing)))
+    (is (= "&copy= &copyx © \"" (html/attr input :data-ref)))
+    (is (= "A&B" (html/attr input :data-text)))
+    (is (= "🙂" (html/attr input :value)))
+    (is (= "¬it; ∉ ∳ ∾̳ 🙂 © € � � � &unknown;" (html/text (html/select-first fragment "p"))))))
+
+(deftest raw-text-and-foreign-elements
+  (let [fragment (html/parse-fragment
+                  (str "<script>a < b && x === '&amp;'; </scripty>z</ScRiPt>"
+                       "<style>.a::before {content:'&amp;'}</style>"
+                       "<textarea>\r\n<p>A&amp;B</textarea><pre>\rA\r\nB</pre>"
+                       "<svg><path/><g><![CDATA[<x>&raw;]]></g></svg>"))]
+    (is (= "a < b && x === '&amp;'; </scripty>z" (html/text (html/select-first fragment "script"))))
+    (is (= ".a::before {content:'&amp;'}" (html/text (html/select-first fragment "style"))))
+    (is (= "<p>A&B" (html/text (html/select-first fragment "textarea"))))
+    (is (= "A\nB" (html/text (html/select-first fragment "pre"))))
+    (is (= "<x>&raw;" (html/text (html/select-first fragment "svg > path + g"))))))
+
+(deftest css-selectors
+  (let [doc (html/parse (str "<main id='a:b'><ul class='items  featured'>"
+                             "<li class=first><a href=/posts/one data-kind='News Latest'>One</a>"
+                             "<li><a href=/posts/two data-kind='Blog Latest'>Two</a>"
+                             "<li><a href=/about lang=en-US>About</a></ul>"
+                             "<div id=empty><!-- ignored --></div><div> </div>"
+                             "<input type=SUBMIT></main>"))
+        links (fn [css] (mapv html/text (html/select doc css)))]
+    (is (= ["One"] (links "#a\\:b > .items.featured > LI:first-child a")))
+    (is (= ["One" "Two"] (links "a[href^='/posts/'], a[href$='two'], li.first a")))
+    (is (= ["Two"] (links "li.first + li > a[data-kind~='Blog']")))
+    (is (= ["Two" "About"] (links "li.first ~ li a[href*='/']")))
+    (is (= ["About"] (links "a[lang|=en]")))
+    (is (= ["One"] (links "a[data-kind='news latest' i]")))
+    (is (= [] (links "a[data-kind='news latest' s], a[href^='']")))
+    (is (= ["About"] (links "li:last-child a:only-child")))
+    (is (= ["empty"] (mapv #(html/attr % :id) (html/select doc "div:empty"))))
+    (is (= "SUBMIT" (html/attr (html/select-first doc "input[type=submit]") :type)))
+    (is (= nil (html/select-first doc "article")))
+    (is (= ["One"] (mapv html/text (html/select (html/select-first doc "ul") "ul > li.first > a"))))
+    (is (= [] (html/select (html/select-first doc "ul") "ul")))
+    (doseq [bad ["" "a," "a >" "a . " "a[href" "a[href='x\n']" "a[attr=x q]" ":has(a)"]]
+      (is (try (html/select doc bad) false (catch ParseError _ true)) bad))))
+
+(deftest file-input
+  (let [doc (html/read-file "tests/fixtures/page.html")]
+    (is (= "Café guide" (html/text (html/select-first doc "title"))))
+    (is (= ["/coffee" "/pastries"]
+           (mapv #(html/attr % :href) (html/select doc "nav a[href]"))))))
+
+(deftest deep-trees-and-long-text
+  (let [depth 1200
+        text (str/repeat-str 70000 "é")
+        fragment (html/parse-fragment (str (str/repeat-str depth "<div>")
+                                           "<p>" text
+                                           (str/repeat-str depth "</div>")))]
+    (is (= text (html/text fragment)))
+    (is (= text (html/text (html/select-first fragment "div > p"))))))
+
+(deftest misplaced-and-mismatched-tags
+  (let [doc (html/parse "<p>x</p><head><title>T</title><meta charset=x></head>")]
+    ;; A late head's contents are kept, after the body content, as browsers do.
+    (is (= ["p" "title" "meta"] (mapv :tag (html/select doc "body > *"))))
+    (is (= "T" (html/text (html/select-first doc "body > title")))))
+  (is (= ["meta"] (mapv :tag (html/select (html/parse "<head></head><head><meta name=x></head><p>y") "head > *"))))
+  ;; Stray end tags don't close past a block element or out of a table cell.
+  (is (= "x" (html/text (html/select-first (html/parse-fragment "<span><div></span>x</div>") "span > div"))))
+  (let [fragment (html/parse-fragment "<div><table><tr><td></div>x</td></tr></table>y</div>")]
+    (is (= "x" (html/text (html/select-first fragment "div > table td"))))
+    (is (= "y" (peek (:children (html/select-first fragment "div"))))))
+  ;; A heading end tag closes the open heading, whatever its level.
+  (is (= ["h1" "p"] (mapv :tag (:children (html/parse-fragment "<h1>A</h2><p>B")))))
+  (is (= ["AB" "B"] (mapv html/text (html/select (html/parse-fragment "<ul><li>A<table><tr><td><li>B</td></tr></table></ul>") "li"))))
+  (is (= ["AB"] (mapv html/text (html/select (html/parse-fragment "<ul><li>A<table><tr><td><li>B</td></tr></table></ul>") "ul > li"))))
+  (is (= "ab" (html/text (html/parse-fragment "<table><tr><td>a</table>b"))))
+  (is (= {:type :doctype :name "html"} (first (:children (html/parse "<!DOCTYPEhtml><p>x")))))
+  (is (= [{:type :comment :text " a -"} "z" {:type :comment :text "b"} "q"]
+         (:children (html/parse-fragment "<!-- a --->z<!--b--!>q")))))
+
+(deftest non-ascii-text-and-references
+  ;; Positions index characters, so references after non-ASCII text decode in place.
+  (let [fragment (html/parse-fragment "<p title='é&amp;ü'>naïve &amp; café<i>é</i>&copy;</p>")]
+    (is (= "é&ü" (html/attr (html/select-first fragment "p") :title)))
+    (is (= "naïve & caféé©" (html/text fragment))))
+  (is (= (str/repeat-str 3000 "x") (html/text (html/parse-fragment (str/repeat-str 3000 "x</i>"))))))
+
+(deftest selectors-on-deep-trees
+  ;; A failing leftmost part used to backtrack over every ancestor combination.
+  (let [fragment (html/parse-fragment (str (str/repeat-str 150 "<div>") "x"))]
+    (is (= [] (html/select fragment "span div div div")))
+    (is (= 147 (count (html/select fragment "div div div div"))))
+    (is (= [] (html/select fragment "span ~ div div ~ div")))))

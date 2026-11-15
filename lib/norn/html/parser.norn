@@ -1,0 +1,454 @@
+(ns norn.html.parser
+  (:require [norn.html.entities :as entities]
+            [norn.html.syntax :as syntax]
+            [norn.string :as str]))
+
+;; The tokenizer works on the document as a vector of characters. Positions
+;; index that vector, never the source string: string offsets cost time
+;; proportional to the position once the text holds any non-ASCII character.
+
+(def ^:private void-tags
+  #{"area" "base" "br" "col" "embed" "hr" "img" "input" "link" "meta"
+    "param" "source" "track" "wbr"})
+
+(def ^:private raw-tags #{"script" "style" "xmp" "iframe" "noembed" "noframes" "plaintext"})
+(def ^:private rcdata-tags #{"title" "textarea"})
+(def ^:private head-tags #{"base" "link" "meta" "title" "style" "script" "noscript" "noframes" "template"})
+
+(def ^:private control-replacements
+  {128 8364, 130 8218, 131 402, 132 8222, 133 8230, 134 8224, 135 8225,
+   136 710, 137 8240, 138 352, 139 8249, 140 338, 142 381, 145 8216,
+   146 8217, 147 8220, 148 8221, 149 8226, 150 8211, 151 8212,
+   152 732, 153 8482, 154 353, 155 8250, 156 339, 158 382, 159 376})
+
+(defn- span [chars start end] (str/join (subvec chars start end)))
+
+(defn- char-at
+  "The character at i, or nil at or past end."
+  [chars i end]
+  (when (< i end) (nth chars i)))
+
+(defn- index-of-char
+  "The first index of c at or after from, before end (default: the end)."
+  ([chars c from] (index-of-char chars c from (count chars)))
+  ([chars c from end]
+   (loop [i from]
+     (cond (>= i end) nil
+           (= c (nth chars i)) i
+           :else (recur (inc i))))))
+
+(defn- index-of-token [chars token from]
+  (let [token (vec token) lead (first token) size (count token) n (count chars)]
+    (loop [i from]
+      (when-let [i (index-of-char chars lead i)]
+        (if (and (<= (+ i size) n)
+                 (loop [k 1] (or (= k size) (and (= (nth token k) (nth chars (+ i k))) (recur (inc k))))))
+          i
+          (recur (inc i)))))))
+
+(defn- alpha-num? [c]
+  (or (syntax/ascii-letter? c) (syntax/digit? c)))
+
+(defn- digit-value [c base]
+  (when c
+    (let [n (int c)]
+      (cond (<= 48 n 57) (- n 48)
+            (and (= base 16) (<= 65 n 70)) (- n 55)
+            (and (= base 16) (<= 97 n 102)) (- n 87)))))
+
+(defn- reference-code-point [n]
+  (if (or (zero? n) (> n 0x10ffff) (<= 0xd800 n 0xdfff))
+    "�"
+    (str (char (get control-replacements n n)))))
+
+(defn- numeric-reference [chars start limit]
+  (let [hex? (contains? #{\x \X} (char-at chars start limit))
+        base (if hex? 16 10)
+        start (if hex? (inc start) start)]
+    (loop [at start value 0]
+      (let [c (char-at chars at limit)]
+        (if-some [digit (digit-value c base)]
+          (recur (inc at) (min 0x110000 (+ (* value base) digit)))
+          (when (> at start)
+            [(reference-code-point value) (if (= c \;) (inc at) at)]))))))
+
+(defn- named-reference [chars start limit attribute?]
+  (let [stop (min limit (+ start 32))
+        end (loop [at start]
+              (if (>= at stop)
+                at
+                (let [c (nth chars at)]
+                  (cond (alpha-num? c) (recur (inc at))
+                        (= c \;) (inc at)
+                        :else at))))]
+    (loop [at end]
+      (when (> at start)
+        (if-some [value (get entities/named (span chars start at))]
+          (let [after (char-at chars at limit)]
+            (when (or (not attribute?) (= \; (nth chars (dec at)))
+                      (not (or (= after \=) (alpha-num? after))))
+              [value at]))
+          (recur (dec at)))))))
+
+(defn- decode-references
+  "The text of chars from start to end, with character references decoded."
+  [chars start end attribute?]
+  (let [next-amp (fn [from] (index-of-char chars \& from end))]
+    (if-let [amp (next-amp start)]
+      (loop [pieces [] start start amp amp]
+        (if (nil? amp)
+          (str/join (conj pieces (span chars start end)))
+          (let [after (inc amp)
+                [replacement stop] (if (= \# (char-at chars after end))
+                                     (numeric-reference chars (inc after) end)
+                                     (named-reference chars after end attribute?))
+                stop (or stop after)]
+            (recur (conj pieces (span chars start amp) (or replacement "&"))
+                   stop (next-amp stop)))))
+      (span chars start end))))
+
+(defn- tag-name-char? [c]
+  (and c (not (syntax/space? c)) (not (contains? #{\/ \>} c))))
+
+(defn- attr-name-char? [c]
+  (and c (tag-name-char? c) (not= c \=)))
+
+(defn- unquoted-char? [c]
+  (and c (not (syntax/space? c)) (not= c \>)))
+
+(defn- attr-value [chars at]
+  (let [at (syntax/skip-while chars at syntax/space?)
+        quote-char (nth chars at nil)]
+    (if (contains? #{\" \'} quote-char)
+      (let [start (inc at)
+            end (or (index-of-char chars quote-char start) (count chars))]
+        [(decode-references chars start end true) (min (count chars) (inc end))])
+      (let [end (syntax/skip-while chars at unquoted-char?)]
+        [(decode-references chars at end true) end]))))
+
+(defn- tag-token [chars start end-tag?]
+  (let [name-start (+ start (if end-tag? 2 1))
+        name-end (syntax/skip-while chars name-start tag-name-char?)
+        tag (syntax/ascii-lower (span chars name-start name-end))
+        type (if end-tag? :end :start)]
+    (loop [at name-end attrs {} slash? false]
+      (let [at (syntax/skip-while chars at syntax/space?)
+            c (nth chars at nil)]
+        (cond (nil? c) [nil at]
+              (= c \>) [{:type type :tag tag :attrs attrs :self-closing? slash?} (inc at)]
+              (= c \/) (recur (inc at) attrs (= \> (nth chars (inc at) nil)))
+              :else
+              (let [name-end (syntax/skip-while chars (inc at) attr-name-char?)
+                    name (syntax/ascii-lower (span chars at name-end))
+                    next-at (syntax/skip-while chars name-end syntax/space?)
+                    [value end] (if (= \= (nth chars next-at nil))
+                                  (attr-value chars (inc next-at))
+                                  ["" next-at])]
+                (recur end (if (contains? attrs name) attrs (assoc attrs name value)) false)))))))
+
+(defn- markup? [chars at]
+  (and (= \< (nth chars at nil))
+       (let [next-char (nth chars (inc at) nil)]
+         (or (syntax/ascii-letter? next-char)
+             (contains? #{\! \?} next-char)
+             (and (= next-char \/) (some? (nth chars (+ at 2) nil)))))))
+
+(defn- comment-end
+  "Where the comment text from start ends, and the width of its closing
+  --> or --!>, found in one pass."
+  [chars start]
+  (loop [i start]
+    (if-let [i (index-of-token chars "--" i)]
+      (case (nth chars (+ i 2) nil)
+        \> [i 3]
+        \! (if (= \> (nth chars (+ i 3) nil)) [i 4] (recur (inc i)))
+        (recur (inc i)))
+      [(count chars) 0])))
+
+(defn- comment-token [chars start]
+  (let [content-start (+ start 4)
+        [end width] (cond (= \> (nth chars content-start nil)) [content-start 1]
+                          (and (= \- (nth chars content-start nil))
+                               (= \> (nth chars (inc content-start) nil))) [content-start 2]
+                          :else (comment-end chars content-start))]
+    [{:type :comment :text (span chars content-start end)} (+ end width)]))
+
+(defn- declaration-token [chars start]
+  (let [n (count chars)
+        end (or (index-of-char chars \> (+ start 2)) n)
+        content (span chars (+ start 2) end)
+        marker (nth chars (inc start))
+        ;; A missing space before the name is an error browsers recover
+        ;; from, so <!DOCTYPEhtml> still names html.
+        doctype (when (= marker \!)
+                  (re-find #"(?i)^doctype[\t\n\r\f ]*([^\t\n\r\f ]*)" content))
+        token (if doctype
+                {:type :doctype :name (syntax/ascii-lower (or (second doctype) ""))}
+                {:type :comment :text (if (= marker \?) (str "?" content) content)})]
+    [token (min n (inc end))]))
+
+(defn- data-token [chars at]
+  (if (markup? chars at)
+    (let [c (nth chars (inc at))
+          after (nth chars (+ at 2) nil)]
+      (cond (syntax/ascii-letter? c) (tag-token chars at false)
+            (and (= c \/) (syntax/ascii-letter? after)) (tag-token chars at true)
+            (and (= c \!) (= after \-) (= \- (nth chars (+ at 3) nil)))
+            (comment-token chars at)
+            (and (= c \/) (= after \>)) [nil (+ at 3)]
+            :else (declaration-token chars at)))
+    (let [end (loop [at (inc at)]
+                (if (or (= at (count chars)) (markup? chars at))
+                  at
+                  (recur (inc at))))]
+      [(decode-references chars at end false) end])))
+
+(defn- raw-end [chars at tag]
+  (if (= tag "plaintext")
+    (count chars)
+    (let [width (count tag)]
+      (loop [start (index-of-token chars "</" at)]
+        (if (nil? start)
+          (count chars)
+          (let [name-start (+ start 2)
+                end (+ name-start width)
+                after (nth chars end nil)]
+            (if (and (or (syntax/space? after) (contains? #{\/ \>} after))
+                     (= tag (syntax/ascii-lower (span chars name-start end))))
+              start
+              (recur (index-of-token chars "</" name-start)))))))))
+
+(defn- next-token [chars at frame]
+  (let [tag (:tag frame)
+        decode? (contains? rcdata-tags tag)
+        n (count chars)]
+    (if (and (not (:foreign? frame)) (or decode? (contains? raw-tags tag)))
+      (let [end (raw-end chars at tag)]
+        (cond (= end at) (data-token chars at)
+              decode? [(decode-references chars at end false) end]
+              :else [(span chars at end) end]))
+      (if (and (:foreign? frame) (= "<![CDATA[" (span chars at (min (+ at 9) n))))
+        (let [start (+ at 9)
+              end (or (index-of-token chars "]]>" start) n)]
+          [(span chars start end) (min (+ end 3) n)])
+        (data-token chars at)))))
+
+;; The stack is a vector of open frames. The first is the root, which also
+;; counts open elements by tag under :open, so a check for an open p, li, a
+;; or button skips the stack scan when there is none. A frame collects
+;; adjacent text in :text and joins it once.
+
+(defn- element [tag attrs]
+  {:type :element :tag tag :attrs attrs :children []})
+
+(defn- flush-text [frame]
+  (if-let [text (:text frame)]
+    (-> frame (dissoc :text) (update :children conj (str/join text)))
+    frame))
+
+(defn- append-child [stack node]
+  (if (or (nil? node) (= "" node))
+    stack
+    (let [at (dec (count stack))
+          frame (nth stack at)]
+      (assoc stack at (if (string? node)
+                        (update frame :text (fnil conj []) node)
+                        (update (flush-text frame) :children conj node))))))
+
+(defn- push [stack node]
+  (conj (update-in stack [0 :open (:tag node)] (fnil inc 0)) node))
+
+(defn- close-from [stack at]
+  (loop [stack stack]
+    (if (> (count stack) at)
+      (let [frame (peek stack)
+            stack (update-in (pop stack) [0 :open (:tag frame)] dec)]
+        (recur (append-child stack (dissoc (flush-text frame) :foreign?))))
+      stack)))
+
+(defn- open-index [stack tags stop-tags]
+  (when (some #(pos? (get-in stack [0 :open %] 0)) tags)
+    (loop [at (dec (count stack))]
+      (when (pos? at)
+        (let [tag (:tag (nth stack at))]
+          (cond (contains? tags tag) at
+                (contains? stop-tags tag) nil
+                :else (recur (dec at))))))))
+
+(defn- close-open [stack tags stop-tags]
+  (if-let [at (open-index stack tags stop-tags)]
+    (close-from stack at)
+    stack))
+
+(def ^:private headings #{"h1" "h2" "h3" "h4" "h5" "h6"})
+
+;; The HTML standard's special elements. An end tag for any other element
+;; never closes past one, and li, dt and dd stop looking at one.
+(def ^:private special
+  (into headings
+        #{"address" "applet" "area" "article" "aside" "base" "basefont" "bgsound"
+          "blockquote" "body" "br" "button" "caption" "center" "col" "colgroup" "dd"
+          "details" "dir" "div" "dl" "dt" "embed" "fieldset" "figcaption" "figure"
+          "footer" "form" "frame" "frameset" "head" "header" "hgroup" "hr" "html"
+          "iframe" "img" "input" "keygen" "li" "link" "listing" "main" "marquee"
+          "menu" "meta" "nav" "noembed" "noframes" "noscript" "object" "ol" "p"
+          "param" "plaintext" "pre" "script" "search" "section" "select" "source"
+          "style" "summary" "table" "tbody" "td" "template" "textarea" "tfoot" "th"
+          "thead" "title" "tr" "track" "ul" "wbr" "xmp"}))
+
+;; Element scopes: the elements that end a search for an open element.
+(def ^:private default-scope #{"applet" "caption" "html" "table" "td" "th" "marquee" "object" "template"})
+(def ^:private button-scope (conj default-scope "button"))
+(def ^:private list-scope (into default-scope #{"ol" "ul"}))
+(def ^:private table-scope #{"html" "table" "template"})
+(def ^:private list-item-stops (disj special "address" "div" "p"))
+
+(def ^:private closes-p
+  (into headings #{"address" "article" "aside" "blockquote" "details" "dialog" "div"
+                   "dl" "dt" "dd" "fieldset" "figcaption" "figure" "footer" "form"
+                   "header" "hgroup" "hr" "li" "main" "menu" "nav" "ol" "p" "pre"
+                   "search" "section" "table" "ul"}))
+(def ^:private cell-tags #{"td" "th"})
+(def ^:private section-tags #{"tbody" "thead" "tfoot"})
+(def ^:private table-boundaries #{"table" "template"})
+
+(defn- prepare-table [stack tag]
+  (let [stack (cond (contains? section-tags tag)
+                    (close-open stack section-tags table-boundaries)
+
+                    (contains? cell-tags tag)
+                    (close-open stack cell-tags #{"tr" "table" "template"})
+
+                    (= tag "tr") (close-open stack #{"tr"} table-boundaries)
+                    :else stack)
+        stack (if (and (or (= tag "tr") (contains? cell-tags tag))
+                       (= "table" (:tag (peek stack))))
+                (push stack (element "tbody" {}))
+                stack)]
+    (cond (and (contains? cell-tags tag) (contains? section-tags (:tag (peek stack))))
+          (push stack (element "tr" {}))
+          (and (= tag "col") (= "table" (:tag (peek stack))))
+          (push stack (element "colgroup" {}))
+          :else stack)))
+
+(defn- prepare-start [stack tag]
+  (let [top (:tag (peek stack))
+        stack (cond (and (= top "head") (not (contains? head-tags tag))) (close-from stack (dec (count stack)))
+                    (and (= top "colgroup") (not= tag "col")) (close-from stack (dec (count stack)))
+                    :else stack)
+        stack (if (contains? closes-p tag) (close-open stack #{"p"} button-scope) stack)
+        stack (cond (= tag "li") (close-open stack #{"li"} list-item-stops)
+                    (contains? #{"dt" "dd"} tag) (close-open stack #{"dt" "dd"} list-item-stops)
+                    (and (contains? headings tag) (contains? headings (:tag (peek stack))))
+                    (close-from stack (dec (count stack)))
+                    (contains? #{"option" "optgroup"} tag)
+                    (close-open stack (if (= tag "option") #{"option"} #{"optgroup" "option"})
+                                #{"select" "datalist" "template"})
+                    (= tag "button") (close-open stack #{"button"} #{"template"})
+                    (= tag "a") (close-open stack #{"a"} #{"template"})
+                    :else stack)]
+    (prepare-table stack tag)))
+
+(defn- start-element [stack {:keys [tag attrs self-closing?]}]
+  (let [parent (peek stack)
+        foreign? (or (contains? #{"svg" "math"} tag)
+                     (and (:foreign? parent)
+                          (not (contains? #{"foreignobject" "desc" "title"} (:tag parent)))))
+        stack (if foreign? stack (prepare-start stack tag))
+        node (element tag attrs)]
+    (if (if foreign? self-closing? (contains? void-tags tag))
+      (append-child stack node)
+      (push stack (if foreign? (assoc node :foreign? true) node)))))
+
+(defn- end-element [stack tag]
+  (cond
+    (= tag "br") (start-element stack {:tag "br" :attrs {}})
+    (= tag "li") (close-open stack #{"li"} list-scope)
+    (= tag "p") (close-open stack #{"p"} button-scope)
+    ;; Any open heading closes, whichever level the end tag names.
+    (contains? headings tag) (close-open stack headings default-scope)
+    (or (contains? section-tags tag) (contains? cell-tags tag) (contains? #{"tr" "table" "caption"} tag))
+    (close-open stack #{tag} table-scope)
+    (= tag "template") (close-open stack #{tag} #{})
+    ;; A special element's end tag closes it only when it is in scope. Any
+    ;; other end tag is ignored when a special element is open above a match.
+    (contains? special tag) (close-open stack #{tag} default-scope)
+    :else (close-open stack #{tag} special)))
+
+(defn- tree [source document?]
+  (let [source (str/replace source #"\r\n?" "\n")
+        source (str/replace source (char 0) "�")
+        chars (vec source)
+        start (if (= (char 0xfeff) (nth chars 0 nil)) 1 0)]
+    (loop [at start stack [{:children []}]]
+      (if (= at (count chars))
+        (:children (flush-text (first (close-from stack 1))))
+        (let [top (peek stack)
+              [token end] (next-token chars at top)]
+          (recur end
+                 (cond
+                   (string? token)
+                   (let [token (if (and (empty? (:children top)) (empty? (:text top))
+                                        (contains? #{"pre" "listing" "textarea"} (:tag top))
+                                        (str/starts-with? token "\n"))
+                                 (subs token 1)
+                                 token)
+                         stack (if (and (= "head" (:tag top)) (not (every? syntax/space? token)))
+                                 (close-from stack (dec (count stack)))
+                                 stack)]
+                     (append-child stack token))
+
+                   (= :start (:type token)) (start-element stack token)
+                   (= :end (:type token)) (end-element stack (:tag token))
+                   (and (= :doctype (:type token)) (or (not document?) (> (count stack) 1))) stack
+                   :else (append-child stack token))))))))
+
+(defn- whitespace? [node]
+  (and (string? node) (every? syntax/space? node)))
+
+(defn- wrapper [tag node]
+  (or node (element tag {})))
+
+(defn parse-document [source]
+  (loop [pending (seq (tree source true))
+         html nil head nil body nil
+         before [] head-nodes [] body-nodes []]
+    (if-let [node (first pending)]
+      (let [remaining (next pending)
+            tag (:tag node)]
+        (cond (= tag "html")
+              (recur (concat (:children node) remaining) (or html node) head body before head-nodes body-nodes)
+
+              (and (= tag "head") (nil? head) (nil? body) (empty? body-nodes))
+              (recur remaining html node body before (into head-nodes (:children node)) body-nodes)
+
+              ;; A later head adds no element, but its contents stay. Head
+              ;; elements before the body still go in the head, as browsers
+              ;; do, and anything after body content goes in the body.
+              (= tag "head")
+              (recur (concat (:children node) remaining) html head body before head-nodes body-nodes)
+
+              (= tag "body")
+              (recur remaining html head (or body node) before head-nodes (into body-nodes (:children node)))
+
+              (and (nil? html) (nil? head) (nil? body) (empty? head-nodes) (empty? body-nodes)
+                   (contains? #{:doctype :comment} (:type node)))
+              (recur remaining html head body (conj before node) head-nodes body-nodes)
+
+              (and (nil? body) (empty? body-nodes) (whitespace? node))
+              (recur remaining html head body before head-nodes body-nodes)
+
+              (and (nil? body) (empty? body-nodes) (contains? head-tags tag))
+              (recur remaining html head body before (conj head-nodes node) body-nodes)
+
+              (= :doctype (:type node))
+              (recur remaining html head body before head-nodes body-nodes)
+
+              :else (recur remaining html head body before head-nodes (conj body-nodes node))))
+      {:type :document
+       :children (conj before (assoc (wrapper "html" html) :children
+                                     [(assoc (wrapper "head" head) :children head-nodes)
+                                      (assoc (wrapper "body" body) :children body-nodes)]))})))
+
+(defn parse-fragment [source]
+  {:type :fragment :children (tree source false)})
