@@ -1,0 +1,156 @@
+(ns norn.html.writer
+  "HTML text from nodes (the parser's shape), and nodes from hiccup-style
+  vectors."
+  (:require [norn.string :as str]))
+
+;; (as the parser has them: elements with no end tag, and elements whose
+;; text is written as it is)
+(def ^:private void-tags
+  #{"area" "base" "br" "col" "embed" "hr" "img" "input" "link" "meta" "source" "track" "wbr"})
+(def ^:private raw-tags #{"script" "style"})
+
+(def ^:private text-escapes {\& "&amp;" \< "&lt;" \> "&gt;"})
+(def ^:private attribute-escapes {\& "&amp;" \" "&quot;" \< "&lt;" \> "&gt;"})
+
+(defn escape
+  "Text s with & < > escaped, for an element's content."
+  ^String [^String s]
+  (str/escape s text-escapes))
+
+(defn escape-attribute
+  "Text s with & \" < > escaped, for a double-quoted attribute value."
+  ^String [^String s]
+  (str/escape s attribute-escapes))
+
+(defn raw
+  "A node that writes html as it is: markup you trust, already HTML."
+  ^Map [^String html]
+  {:type :raw :html html})
+
+;; ---- writing ----
+;;
+;; (each function adds its pieces of text to out, a transient vector, and
+;; returns it; write joins them once)
+
+(defn- add [out & pieces] (reduce conj! out pieces))
+
+(defn- write-attrs [out attrs]
+  (reduce (fn [out [k v]]
+            (if (= "" v)
+              (add out " " k)
+              (add out " " k "=\"" (escape-attribute v) "\"")))
+          out (sort-by key attrs)))
+
+(declare write-node)
+
+(defn- write-children [out children raw?]
+  (reduce (fn [out c] (if (string? c) (conj! out (if raw? c (escape c))) (write-node out c)))
+          out children))
+
+(defn- write-node [out node]
+  (if (string? node)
+    (conj! out (escape node))
+    (case (:type node)
+      :element (let [tag (:tag node)
+                     out (conj! (write-attrs (add out "<" tag) (:attrs node)) ">")]
+                 (if (contains? void-tags tag)
+                   out
+                   (add (write-children out (:children node) (contains? raw-tags tag)) "</" tag ">")))
+      (:document :fragment) (write-children out (:children node) false)
+      :doctype (add out "<!DOCTYPE " (or (:name node) "html") ">")
+      :comment (add out "<!--" (:text node) "-->")
+      :raw (conj! out (:html node))
+      (error (str "norn.html: not a node: " (pr-str node))))))
+
+(defn write
+  "Node (a document, fragment, element, text, comment, doctype or raw) as
+  HTML text. Text is escaped, but in script and style elements."
+  ^String [node]
+  (apply str (persistent! (write-node (transient []) node))))
+
+;; ---- hiccup ----
+
+(defn- tag-parts
+  "A tag written as :div.card#main: [\"div\" [\"card\"] \"main\"]."
+  [t]
+  (let [s (name t)
+        [_ tag rest] (re-matches #"([^.#]*)(.*)" s)
+        classes (mapv second (re-seq #"\.([^.#]+)" rest))
+        id (second (re-find #"#([^.#]+)" rest))]
+    (when (str/blank? tag) (error (str "norn.html: no tag name in " (pr-str t))))
+    [(str/lower-case tag) classes id]))
+
+(defn- attribute-value
+  "v as an attribute's text, nil for one to leave out."
+  [k v]
+  (cond (or (nil? v) (false? v)) nil
+        (true? v) ""
+        (and (= k "class") (sequential? v)) (str/join " " (map name (remove nil? v)))
+        (and (= k "style") (map? v)) (str/join "; " (for [[p x] (sort-by (comp name key) v) :when (some? x)] (str (name p) ": " (if (keyword? x) (name x) x))))
+        (keyword? v) (name v)
+        :else (str v)))
+
+(defn- attrs-of [classes id m]
+  (let [given (into {} (for [[k v] m
+                             :let [k (str/lower-case (name k)) v (attribute-value k v)]
+                             :when (some? v)]
+                         [k v]))
+        class (str/join " " (concat classes (when-let [c (get given "class")] [c])))]
+    (cond-> given
+            (seq class) (assoc "class" class)
+            id (assoc "id" id))))
+
+(def ^:private node-types #{:element :document :fragment :comment :doctype :raw})
+
+(defn- node? "Is x a node (a map whose :type is a node type)?" [x] (and (map? x) (contains? node-types (:type x))))
+
+(defn- element-form? "Is x [:tag …]?" [x] (and (vector? x) (keyword? (first x))))
+
+(declare node-of)
+
+(defn- children-of
+  "Forms as nodes: nil left out, sequences that aren't [:tag …] forms
+  spliced in (for and map give vectors in Norn, not lazy sequences)."
+  [forms]
+  (reduce (fn [out f]
+            (cond (nil? f) out
+                  (and (sequential? f) (not (element-form? f))) (into out (children-of f))
+                  :else (conj out (node-of f))))
+          [] forms))
+
+(defn- node-of [form]
+  (cond (string? form) form
+        (or (number? form) (keyword? form) (char? form)) (if (keyword? form) (name form) (str form))
+        (node? form) form
+        (element-form? form)
+        (let [[t & more] form
+              [tag classes id] (tag-parts t)
+              [m kids] (if (and (map? (first more)) (not (node? (first more)))) [(first more) (rest more)] [{} more])]
+          {:type :element :tag tag :attrs (attrs-of classes id m) :children (children-of kids)})
+        :else (error (str "norn.html: can't make HTML of " (pr-str form)))))
+
+(defn html
+  "Nodes from hiccup-style forms: [:tag attrs? children…], the tag maybe
+  with classes and an id (:div.card#main), attrs a map (true for an
+  attribute with no value, nil or false to leave it out, a vector for
+  :class, a map for :style, written sorted by property, which puts
+  shorthands before their longhands). Children are forms, strings,
+  numbers, nodes (raw, or parsed), nil (nothing) or sequences of them
+  (spliced in: a vector that doesn't start with a keyword is one). One form gives its
+  node; several, a fragment of them."
+  ([form] (node-of form))
+  ([form & more] {:type :fragment :children (children-of (cons form more))}))
+
+(defn document
+  "A whole HTML document: a doctype, then html with lang (default \"en\"),
+  a head with a UTF-8 charset, the viewport, title and the forms in :head,
+  and body. Options: :title :lang :head."
+  ^Map [^Map opts & body]
+  {:type :document
+   :children [{:type :doctype :name "html"}
+              (html [:html {:lang (or (:lang opts) "en")}
+                     [:head [:meta {:charset "utf-8"}]
+                      [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+                      (when (:title opts) [:title (:title opts)])
+                      (:head opts)]
+                     (into [:body] body)])]})

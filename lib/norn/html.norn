@@ -1,7 +1,10 @@
 (ns norn.html
+  "HTML as Norn data: parse it, query it with CSS selectors, build it from
+  hiccup-style forms, and write it as text."
   (:require [norn.html.parser :as parser]
             [norn.html.selector :as selector]
             [norn.html.syntax :as syntax]
+            [norn.html.writer :as writer]
             [norn.io :as io]
             [norn.string :as str]))
 
@@ -44,3 +47,49 @@
   "Return the first matching descendant element, or nil."
   [node css]
   (selector/select node css true))
+
+;; ---- writing ----
+
+(defn write
+  "Node (a document, fragment, element, text, comment, doctype or raw node)
+  as HTML text. Text and attribute values are escaped; script and style
+  text is written as it is. What parse gives, write gives back as HTML
+  that parses to it again."
+  ^String [node]
+  (writer/write node))
+
+(defn escape
+  "Text s with & < > escaped, to put in an element's content."
+  ^String [^String s]
+  (writer/escape s))
+
+(defn escape-attribute
+  "Text s with & \" < > escaped, to put in a double-quoted attribute value."
+  ^String [^String s]
+  (writer/escape-attribute s))
+
+(defn raw
+  "A node that writes html as it is: markup you trust, already HTML."
+  ^Map [^String html]
+  (writer/raw html))
+
+(defn html
+  "Nodes from hiccup-style forms: [:tag attrs? children…], the tag maybe
+  with classes and an id (:div.card#main), attrs a map (true for an
+  attribute with no value, nil or false to leave it out, a vector for
+  :class, a map for :style). Children are forms, strings, numbers, nodes,
+  nil (nothing) or sequences of them. One form gives its node; several, a
+  fragment of them."
+  ([form] (writer/html form))
+  ([form & more] (apply writer/html form more)))
+
+(defn render
+  "The HTML text of hiccup-style forms: (write (html form…))."
+  ^String [form & more]
+  (write (apply html form more)))
+
+(defn document
+  "A whole document: doctype, html with :lang (\"en\"), a head with a UTF-8
+  charset, the viewport, :title and the forms in :head, and body."
+  ^Map [^Map opts & body]
+  (apply writer/document opts body))

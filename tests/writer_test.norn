@@ -1,0 +1,60 @@
+(ns writer-test
+  (:require [norn.html :as html]
+            [norn.io :as io]
+            [norn.property :as p :refer [defproperty]]
+            [norn.string :as str]
+            [norn.test :refer [deftest is testing]]))
+
+(deftest escaping
+  (is (= "a &amp; b &lt;c&gt; \"d\" 'e'" (html/escape "a & b <c> \"d\" 'e'")))
+  (is (= "a &amp; &quot;b&quot; &lt;c&gt;" (html/escape-attribute "a & \"b\" <c>"))))
+
+(deftest building
+  (testing "tags, classes, ids and attributes"
+    (is (= "<div class=\"card wide\" id=\"main\">x</div>" (html/render [:div.card#main {:class "wide"} "x"])))
+    (is (= "<input disabled type=\"checkbox\">" (html/render [:input {:type :checkbox :disabled true :checked false}]))
+        "true is an attribute with no value; false and nil leave it out")
+    (is (= "<p class=\"a c\">x</p>" (html/render [:p {:class [:a nil "c"]} "x"])))
+    (is (= "<p style=\"color: red; margin: 0; margin-top: 4px\"></p>"
+           (html/render [:p {:style {:margin-top "4px" :margin 0 :color :red}}]))
+        "style properties sorted: shorthands before their longhands")
+    (is (= "<a data-id=\"7\" href=\"/q?a=1&amp;b=2\">go</a>" (html/render [:a {:href "/q?a=1&b=2" :data-id 7} "go"]))))
+  (testing "children"
+    (is (= "<ul><li>1</li><li>2</li></ul>" (html/render [:ul (for [i [1 2]] [:li i])])) "a sequence is spliced in")
+    (is (= "<p>ab</p>" (html/render [:p (map str ["a" "b"])])) "a vector that isn't [:tag …] too")
+    (is (= "<p>a&lt;b 3</p>" (html/render [:p "a<b" nil " " 3])) "text is escaped; nil is nothing")
+    (is (= "<p><b>trusted</b></p>" (html/render [:p (html/raw "<b>trusted</b>")])))
+    (is (= "<br><hr>" (html/render [:br] [:hr])) "several forms: a fragment")
+    (is (= "<script>if (a < b) go()</script>" (html/render [:script "if (a < b) go()"])) "script text as it is"))
+  (testing "parsed nodes go in as they are"
+    (is (= "<div><em>hi</em></div>" (html/render [:div (html/parse-fragment "<em>hi</em>")]))))
+  (testing "what isn't HTML"
+    (is (thrown? Error (html/render [:.x "no tag"])))
+    (is (thrown? Error (html/render [{:a 1}])))))
+
+(deftest documents
+  (let [text (html/write (html/document {:title "Notes & more" :head [:link {:rel "stylesheet" :href "s.css"}]}
+                                        [:h1 "Hi"]))]
+    (is (str/starts-with? text "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"))
+    (is (str/includes? text "<title>Notes &amp; more</title><link href=\"s.css\" rel=\"stylesheet\"></head>"))
+    (is (str/ends-with? text "<body><h1>Hi</h1></body></html>"))
+    (is (= "Notes & more" (html/text (html/select-first (html/parse text) "title"))) "and it parses back")))
+
+(def here (let [loc (%location)] (io/parent (subs loc 0 (str/last-index-of loc ":")))))
+
+(deftest what-parse-gives-write-gives-back
+  (let [page (html/read-file (io/path here "fixtures" "page.html"))]
+    (is (= page (html/parse (html/write page))) "the fixture page"))
+  (is (= "<p title=\"a&quot;b\">x &amp; y<br></p>" (html/write (html/parse-fragment "<p title='a\"b'>x &amp; y<br></p>")))))
+
+;; Random trees of elements and text: written, parsed and written again,
+;; the same text.
+(def ^:private texts (p/strings :min 0 :max 6))
+(def ^:private trees
+  (p/recursive (fn [inner] (p/fmap (fn [[tag attr kids]] (into [tag {:title attr}] kids))
+                                   (p/tuple (p/elements [:div :span :em :b :section]) texts (p/vectors inner :max 3))))
+               texts))
+
+(defproperty writing-then-parsing-is-stable {:runs 200} [t trees]
+  (let [once (html/render [:div t])]
+    (= once (html/write (html/parse-fragment once)))))

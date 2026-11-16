@@ -1,0 +1,4 @@
+;; norn.html.entities's public interface, recorded by norn api-diff --record.
+{
+ "named" {:kind :var}
+}

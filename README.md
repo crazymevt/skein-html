@@ -1,6 +1,7 @@
 # norn-html
 
-Parse HTML into immutable Norn data and query it with CSS selectors. The
+Parse HTML into immutable Norn data, query it with CSS selectors, and build
+and write HTML from data. The
 package runs on stock Norn and needs no native helper or external executable.
 
 ## Install
@@ -51,6 +52,40 @@ selector lists, and descendant, child, adjacent-sibling, and general-sibling
 combinators. Supported pseudo-classes are `:first-child`, `:last-child`,
 `:only-child`, `:empty`, and `:root`. Attribute comparisons accept the `i` and
 `s` case flags. Invalid or unsupported selectors signal `ParseError`.
+
+## Build and write
+
+```clojure
+(html/render [:ul.links (for [{:keys [href label]} links] [:li [:a {:href href} label]])])
+;; => "<ul class=\"links\"><li><a href=\"/latest\">Latest &amp; greatest</a></li></ul>"
+
+(html/write (html/document {:title "Report"} [:h1 "Totals"] [:p "…"]))
+```
+
+| Function | Result |
+| --- | --- |
+| `(html form…)` | Nodes from hiccup-style forms: `[:tag attrs? children…]`, the tag maybe `:div.card#main`. |
+| `(render form…)` | The HTML text of forms: `(write (html form…))`. |
+| `(write node)` | A node as HTML text: text and attribute values escaped, script and style text as it is. |
+| `(document opts body…)` | A whole page: doctype, `html` with `:lang`, a head with charset, viewport, `:title` and `:head`. |
+| `(escape s)`, `(escape-attribute s)` | Text escaped for content, or for a double-quoted attribute. |
+| `(raw html)` | A node written as it is, for markup you trust. |
+
+In attributes, `true` is an attribute with no value, `nil` and `false` leave it
+out, `:class` takes a vector, and `:style` a map (written sorted by property, so
+shorthands come before their longhands). Children may be strings, numbers,
+nodes, `nil`, or sequences of them, which are spliced in. In Norn `for` and
+`map` give vectors, so a vector that doesn't start with a keyword counts as a
+sequence. Attributes are written sorted by name.
+
+What `parse` gives, `write` gives back as HTML that parses to it again, and
+writing, parsing and writing again gives the same text (a property test checks
+it).
+
+## Interface
+
+`api/` records the package's public interface. `norn api-diff` checks it before
+a release; a breaking change needs a new major version.
 
 ## Parsing scope
 

@@ -1,0 +1,9 @@
+;; norn.html.writer's public interface, recorded by norn api-diff --record.
+{
+ "document" {:arglists ["[opts & body]"], :kind :function, :signature [{:result "Map", :args ["Map"], :rest "Any"}]}
+ "escape" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "escape-attribute" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
+ "html" {:arglists ["[form]" "[form & more]"], :kind :function}
+ "raw" {:arglists ["[html]"], :kind :function, :signature [{:result "Map", :args ["String"]}]}
+ "write" {:arglists ["[node]"], :kind :function, :signature [{:result "String", :args ["Any"]}]}
+}

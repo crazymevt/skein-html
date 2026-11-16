@@ -1,0 +1,8 @@
+;; norn.html.syntax's public interface, recorded by norn api-diff --record.
+{
+ "ascii-letter?" {:arglists ["[c]"], :kind :function}
+ "ascii-lower" {:arglists ["[s]"], :kind :function}
+ "digit?" {:arglists ["[c]"], :kind :function}
+ "skip-while" {:arglists ["[chars at pred]"], :kind :function}
+ "space?" {:kind :var}
+}
