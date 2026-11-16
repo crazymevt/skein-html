@@ -30,7 +30,10 @@
     (is (= "<div><em>hi</em></div>" (html/render [:div (html/parse-fragment "<em>hi</em>")]))))
   (testing "what isn't HTML"
     (is (thrown? Error (html/render [:.x "no tag"])))
-    (is (thrown? Error (html/render [{:a 1}])))))
+    (is (thrown? Error (html/render [{:a 1}]))))
+  (testing "a sequence of forms is a fragment, at the top as among children"
+    (is (= "<p>a</p><p>b</p>" (html/render [[:p "a"] [:p "b"]])))
+    (is (= "<p>a</p><p>b</p>" (html/render (list [:p "a"] [:p "b"]))))))
 
 (deftest documents
   (let [text (html/write (html/document {:title "Notes & more" :head [:link {:rel "stylesheet" :href "s.css"}]}

@@ -127,6 +127,8 @@
               [tag classes id] (tag-parts t)
               [m kids] (if (and (map? (first more)) (not (node? (first more)))) [(first more) (rest more)] [{} more])]
           {:type :element :tag tag :attrs (attrs-of classes id m) :children (children-of kids)})
+        ;; (a sequence of forms, at the top as among children: a fragment)
+        (sequential? form) {:type :fragment :children (children-of form)}
         :else (error (str "norn.html: can't make HTML of " (pr-str form)))))
 
 (defn html
