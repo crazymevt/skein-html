@@ -1,4 +1,4 @@
-;; norn.html.syntax's public interface, recorded by norn api-diff --record.
+;; skein.html.syntax's public interface, recorded by skein api-diff --record.
 {
  "ascii-letter?" {:arglists ["[c]"], :kind :function}
  "ascii-lower" {:arglists ["[s]"], :kind :function}

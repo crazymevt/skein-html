@@ -1,7 +1,7 @@
-(ns norn.html.writer
+(ns skein.html.writer
   "HTML text from nodes (the parser's shape), and nodes from hiccup-style
   vectors."
-  (:require [norn.string :as str]))
+  (:require [skein.string :as str]))
 
 ;; (as the parser has them: elements with no end tag, and elements whose
 ;; text is written as it is)
@@ -60,7 +60,7 @@
       :doctype (add out "<!DOCTYPE " (or (:name node) "html") ">")
       :comment (add out "<!--" (:text node) "-->")
       :raw (conj! out (:html node))
-      (error (str "norn.html: not a node: " (pr-str node))))))
+      (error (str "skein.html: not a node: " (pr-str node))))))
 
 (defn write
   "Node (a document, fragment, element, text, comment, doctype or raw) as
@@ -77,7 +77,7 @@
         [_ tag rest] (re-matches #"([^.#]*)(.*)" s)
         classes (mapv second (re-seq #"\.([^.#]+)" rest))
         id (second (re-find #"#([^.#]+)" rest))]
-    (when (str/blank? tag) (error (str "norn.html: no tag name in " (pr-str t))))
+    (when (str/blank? tag) (error (str "skein.html: no tag name in " (pr-str t))))
     [(str/lower-case tag) classes id]))
 
 (defn- attribute-value
@@ -110,7 +110,7 @@
 
 (defn- children-of
   "Forms as nodes: nil left out, sequences that aren't [:tag …] forms
-  spliced in (for and map give vectors in Norn, not lazy sequences)."
+  spliced in (for and map give vectors in Skein, not lazy sequences)."
   [forms]
   (reduce (fn [out f]
             (cond (nil? f) out
@@ -129,7 +129,7 @@
           {:type :element :tag tag :attrs (attrs-of classes id m) :children (children-of kids)})
         ;; (a sequence of forms, at the top as among children: a fragment)
         (sequential? form) {:type :fragment :children (children-of form)}
-        :else (error (str "norn.html: can't make HTML of " (pr-str form)))))
+        :else (error (str "skein.html: can't make HTML of " (pr-str form)))))
 
 (defn html
   "Nodes from hiccup-style forms: [:tag attrs? children…], the tag maybe

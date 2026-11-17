@@ -1,7 +1,7 @@
 (ns html-test
-  (:require [norn.html :as html]
-            [norn.string :as str]
-            [norn.test :refer [deftest is]]))
+  (:require [skein.html :as html]
+            [skein.string :as str]
+            [skein.test :refer [deftest is]]))
 
 (deftest documents-and-fragments
   (let [doc (html/parse (str "<!DOCTYPE HTML><!-- before --><HTML lang=en>"

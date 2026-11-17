@@ -1,17 +1,9 @@
-;; norn.html's public interface, recorded by norn api-diff --record.
+;; skein.html.writer's public interface, recorded by skein api-diff --record.
 {
- "attr" {:arglists ["[node attribute]"], :kind :function}
  "document" {:arglists ["[opts & body]"], :kind :function, :signature [{:result "Map", :args ["Map"], :rest "Any"}]}
  "escape" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
  "escape-attribute" {:arglists ["[s]"], :kind :function, :signature [{:result "String", :args ["String"]}]}
  "html" {:arglists ["[form]" "[form & more]"], :kind :function}
- "parse" {:arglists ["[source]"], :kind :function}
- "parse-fragment" {:arglists ["[source]"], :kind :function}
  "raw" {:arglists ["[html]"], :kind :function, :signature [{:result "Map", :args ["String"]}]}
- "read-file" {:arglists ["[path]"], :kind :function}
- "render" {:arglists ["[form & more]"], :kind :function, :signature [{:result "String", :args ["Any"], :rest "Any"}]}
- "select" {:arglists ["[node css]"], :kind :function}
- "select-first" {:arglists ["[node css]"], :kind :function}
- "text" {:arglists ["[node]"], :kind :function}
  "write" {:arglists ["[node]"], :kind :function, :signature [{:result "String", :args ["Any"]}]}
 }

@@ -2,7 +2,7 @@
 ;;;; https://html.spec.whatwg.org/entities.json
 ;;;; Generated from Python's html.entities.html5 table.
 
-(ns norn.html.entities)
+(ns skein.html.entities)
 
 (def named
   {"AElig" "Æ"

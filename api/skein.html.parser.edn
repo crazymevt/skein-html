@@ -1,4 +1,4 @@
-;; norn.html.parser's public interface, recorded by norn api-diff --record.
+;; skein.html.parser's public interface, recorded by skein api-diff --record.
 {
  "parse-document" {:arglists ["[source]"], :kind :function}
  "parse-fragment" {:arglists ["[source]"], :kind :function}

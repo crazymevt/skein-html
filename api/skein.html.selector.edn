@@ -1,0 +1,4 @@
+;; skein.html.selector's public interface, recorded by skein api-diff --record.
+{
+ "select" {:arglists ["[node source first-only?]"], :kind :function}
+}

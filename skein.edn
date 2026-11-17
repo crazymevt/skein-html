@@ -1,0 +1,3 @@
+{:name skein-html
+ :version "0.3.0"
+ :paths ["lib"]}

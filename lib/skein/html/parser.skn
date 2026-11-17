@@ -1,7 +1,7 @@
-(ns norn.html.parser
-  (:require [norn.html.entities :as entities]
-            [norn.html.syntax :as syntax]
-            [norn.string :as str]))
+(ns skein.html.parser
+  (:require [skein.html.entities :as entities]
+            [skein.html.syntax :as syntax]
+            [skein.string :as str]))
 
 ;; The tokenizer works on the document as a vector of characters. Positions
 ;; index that vector, never the source string: string offsets cost time

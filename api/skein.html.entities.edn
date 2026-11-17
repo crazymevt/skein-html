@@ -1,0 +1,4 @@
+;; skein.html.entities's public interface, recorded by skein api-diff --record.
+{
+ "named" {:kind :var}
+}

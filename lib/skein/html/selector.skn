@@ -1,6 +1,6 @@
-(ns norn.html.selector
-  (:require [norn.html.syntax :as syntax]
-            [norn.string :as str]))
+(ns skein.html.selector
+  (:require [skein.html.syntax :as syntax]
+            [skein.string :as str]))
 
 (defn- current [{:keys [chars at]}]
   (nth chars @at nil))

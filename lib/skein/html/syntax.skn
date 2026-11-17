@@ -1,5 +1,5 @@
-(ns norn.html.syntax
-  (:require [norn.string :as str]))
+(ns skein.html.syntax
+  (:require [skein.string :as str]))
 
 (def space? #{\space \tab \newline \return \formfeed})
 

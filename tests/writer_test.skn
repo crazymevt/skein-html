@@ -1,9 +1,9 @@
 (ns writer-test
-  (:require [norn.html :as html]
-            [norn.io :as io]
-            [norn.property :as p :refer [defproperty]]
-            [norn.string :as str]
-            [norn.test :refer [deftest is testing]]))
+  (:require [skein.html :as html]
+            [skein.io :as io]
+            [skein.property :as p :refer [defproperty]]
+            [skein.string :as str]
+            [skein.test :refer [deftest is testing]]))
 
 (deftest escaping
   (is (= "a &amp; b &lt;c&gt; \"d\" 'e'" (html/escape "a & b <c> \"d\" 'e'")))

@@ -1,12 +1,12 @@
-(ns norn.html
-  "HTML as Norn data: parse it, query it with CSS selectors, build it from
+(ns skein.html
+  "HTML as Skein data: parse it, query it with CSS selectors, build it from
   hiccup-style forms, and write it as text."
-  (:require [norn.html.parser :as parser]
-            [norn.html.selector :as selector]
-            [norn.html.syntax :as syntax]
-            [norn.html.writer :as writer]
-            [norn.io :as io]
-            [norn.string :as str]))
+  (:require [skein.html.parser :as parser]
+            [skein.html.selector :as selector]
+            [skein.html.syntax :as syntax]
+            [skein.html.writer :as writer]
+            [skein.io :as io]
+            [skein.string :as str]))
 
 (defn parse
   "Parse an HTML string as a document, with html, head and body elements."

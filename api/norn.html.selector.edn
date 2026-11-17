@@ -1,4 +1,0 @@
-;; norn.html.selector's public interface, recorded by norn api-diff --record.
-{
- "select" {:arglists ["[node source first-only?]"], :kind :function}
-}
